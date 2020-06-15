@@ -12,9 +12,9 @@ typedef struct pixel_t
     pixel_t(int r,int c):row(r), col(c){}
 } pixel;
 
-typedef float (*weightFunction)(pixel, pixel);
+typedef float (*weightFunction)(pixel, pixel, int);
 
-enum connectivity { CONN_8, CONN_4 };
+enum connectivity { CONN_8 = 8, CONN_4 = 4};
 
 // Setter for the epsilon scalar. Its default value is 0.001
 void setEpsilon(float e);

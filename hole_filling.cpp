@@ -3,14 +3,13 @@
 #include <list>
 #include <queue>
 #include <iterator>
-
-bool isConnectedToHole(const cv::Mat&, pixel);
+#include <stack>
 
 static float _epsilon = 0.001;
 static float _Z = 2;
 static connectivity _conn = CONN_4;
 
-float _defaultWeight(pixel p1, pixel p2)
+float _defaultWeight(pixel p1, pixel p2, int level)
 {
     float denominator;
     float x1 = p1.col - p2.col, y1 = p1.row - p2.row;
@@ -19,7 +18,13 @@ float _defaultWeight(pixel p1, pixel p2)
     return 1.f/denominator;
 }
 
+enum STATE {A,B,C,D,E};
+
 static weightFunction _weight = _defaultWeight;
+
+STATE getState(cv::Mat&, pixel);
+void fillPixelNeighbors(pixel, pixel*);
+bool isConnectedToHole(const cv::Mat&, pixel);
 
 // Given a matrix with a hole, this function builds two lists:
 // one list will hold all the hole's pixels,
@@ -47,21 +52,11 @@ void buildHole(cv::Mat& image, std::list<pixel> *holePixels, std::list<pixel> *b
 // is connected to a hole by 8-connectivety or not.
 bool isConnectedToHole(const cv::Mat& image, pixel p)
 {
-    bool result =
-    // No need to check the corners of the image since we padded
-    // it with an extra layer of zeros when we built the floats matrix in 'createFloatImage'.
-        image.at<float>(p.row-1, p.col  ) == -1 ||
-        image.at<float>(p.row  , p.col+1) == -1 ||
-        image.at<float>(p.row+1, p.col  ) == -1 ||
-        image.at<float>(p.row  , p.col-1) == -1;
-    
-    if (_conn == CONN_8)
-        result |=
-            image.at<float>(p.row-1, p.col+1) == -1 ||
-            image.at<float>(p.row+1, p.col+1) == -1 ||
-            image.at<float>(p.row+1, p.col-1) == -1 ||
-            image.at<float>(p.row-1, p.col-1) == -1 ;
-
+    pixel neighbors[8];
+    fillPixelNeighbors(p, neighbors);
+    bool result = false;
+    for (int i = 0; i < _conn; i++)
+       result |= (image.at<float>(neighbors[i].row, neighbors[i].col) == -1);
     return result;
 }
 
@@ -76,7 +71,7 @@ void fillHole(const std::list<pixel>& H, const std::list<pixel>& B, cv::Mat& ima
         denominator = numerator = 0;
         for (pixel boundaryPixel: B) // ..iterate over all the pixels in the boundary
         {
-            weightTemp = _weight(holePixel, boundaryPixel);
+            weightTemp = _weight(holePixel, boundaryPixel, 1);
             denominator += weightTemp;
             numerator += weightTemp * image.at<float>(boundaryPixel.row, boundaryPixel.col);
         }
@@ -124,184 +119,190 @@ pixel findFirstPixelHole(const cv::Mat& image)
     return {-1, -1};
 }
 
-bool touchesBorder(const cv::Mat* image, pixel p)
+bool touchesBorder(cv::Mat& image, pixel p)
 {
-    bool result =
-        image->at<float>(p.row-1, p.col  ) >= 0 ||
-        image->at<float>(p.row  , p.col+1) >= 0 ||
-        image->at<float>(p.row+1, p.col  ) >= 0 ||
-        image->at<float>(p.row  , p.col-1) >= 0;
-    
-    if (_conn == CONN_8)
-        result |=
-            image->at<float>(p.row-1, p.col+1) >= 0 ||
-            image->at<float>(p.row+1, p.col+1) >= 0 ||
-            image->at<float>(p.row+1, p.col-1) >= 0 ||
-            image->at<float>(p.row-1, p.col-1) >= 0 ;
-
-    return result;
+    pixel neighbors[8];
+    fillPixelNeighbors(p, neighbors);
+    STATE s;
+    for (int i = 0; i < _conn; i++)
+    {
+        s = getState(image, neighbors[i]);
+        if (s == E)
+            return true;
+    }
+    return false;
 }
 
-// This function finds all the nodes (pixels) that are connected to the given one,
-// and it does so in runtime. The set of neighbors found could never be greater than
-// five, maybe accept the root node which started the search.
-void findBorderNeighbors(pixel p, cv::Mat& image, std::list<pixel>& neighbors)
+STATE getState(cv::Mat& image, pixel p) 
 {
-    // For every neighbor node found, mark its value so no one else
-    // would add it to his list (avoiding cycles).
-    
-    if (image.at<float>(p.row-1, p.col) == -1 && touchesBorder(&image, {p.row-1, p.col}))
+    float pixelValue = image.at<float>(p.row, p.col);
+    if (pixelValue == -1)
+        return A;
+    if (pixelValue == 1.5)
+        return B;
+    if (pixelValue < 2)
+        return E;
+    if (pixelValue <= 3)
+        return C;
+    return D;
+}
+
+// This function adds to the given list all the pixels that are 
+// connected to the given pixel p and have the state A, means they 
+// are yet untouched hole pixels.
+void addHoleHeighbors(cv::Mat& image, std::list<pixel>& l, pixel p)
+{
+    pixel neighbors[8];
+    fillPixelNeighbors(p, neighbors);
+    STATE s;
+    for (int i = 0; i < _conn; i++)
     {
-        image.at<float>(p.row-1, p.col) = -2;
-        neighbors.push_back({p.row-1, p.col});
-    }
-    
-    if (image.at<float>(p.row  , p.col+1) == -1 && touchesBorder(&image, {p.row, p.col + 1}))
-    {
-        image.at<float>(p.row, p.col+1) = -2;
-        neighbors.push_back({p.row, p.col+1});
-    }
-    
-    if (image.at<float>(p.row+1, p.col) == -1 && touchesBorder(&image, {p.row+1, p.col}))
-    {
-        image.at<float>(p.row+1, p.col) = -2;
-        neighbors.push_back({p.row+1, p.col});
-    }
-    
-    if (image.at<float>(p.row, p.col-1) == -1 && touchesBorder(&image, {p.row, p.col - 1}))
-    {
-        image.at<float>(p.row, p.col-1) = -2;
-        neighbors.push_back({p.row, p.col-1});
-    }
-    
-    if (_conn == CONN_8)
-    {
-        if (image.at<float>(p.row-1, p.col+1) == -1 && touchesBorder(&image, {p.row-1, p.col + 1}))
+        s = getState(image, neighbors[i]);
+        if (s == A)
         {
-            image.at<float>(p.row-1, p.col+1) = -2;
-            neighbors.push_back({p.row-1, p.col+1});
-        }
-            
-        if (image.at<float>(p.row+1, p.col+1) == -1 && touchesBorder(&image, {p.row+1, p.col+1}))
-        {
-            image.at<float>(p.row+1, p.col+1) = -2;
-            neighbors.push_back({p.row+1, p.col+1});
-        }
-            
-        if (image.at<float>(p.row+1, p.col-1) == -1 && touchesBorder(&image, {p.row+1, p.col-1}))
-        {
-            image.at<float>(p.row+1, p.col-1) = -2;
-            neighbors.push_back({p.row+1, p.col-1});
-        }
-            
-        if (image.at<float>(p.row-1, p.col-1) == -1 && touchesBorder(&image, {p.row-1, p.col-1}))
-        {
-            image.at<float>(p.row-1, p.col-1) = -2;
-            neighbors.push_back({p.row-1, p.col-1});
+            l.push_back(neighbors[i]);
+            image.at<float>(neighbors[i].row, neighbors[i].col) = 1.5;
         }
     }
 }
 
-// This function gets a pixel and calculate its color
-// from all the pixels that are connected to it.
-float neighborsColor(const cv::Mat& image, pixel p)
+// This function calculates a color of a pixel by iterating over 
+// all of the pixels that are connected to the given one.
+float findNeighborsColor(pixel p, cv::Mat& image, int level)
 {
-    float denominator = 0, numerator = 0, weightTemp, tempColor;
-    
-    // When the value of the color is greater than minus one
-    // it means that the pixel was visited, but its color was already
-    // calculated (though, as a negative same number).
-    
-    if ((tempColor = image.at<float>(p.row-1, p.col)) > -1)
+    float numerator = 0, denominator = 0, pixelValue, color, weight;
+    double dummy;
+    pixel neighbors[8];
+    fillPixelNeighbors(p, neighbors);
+
+    for (int i = 0; i < _conn; i++)
     {
-        weightTemp = _weight({p.row-1, p.col}, p);
-        numerator += abs(image.at<float>(p.row-1, p.col)) * weightTemp;
-        denominator += weightTemp;
+        pixelValue = image.at<float>(neighbors[i].row, neighbors[i].col);
+        if (pixelValue == -1 || pixelValue == 1.5) continue;
+        color = modf(pixelValue, &dummy);
+        weight = _weight(p, neighbors[i], level);
+        numerator += color * weight;
+        denominator += weight;
     }
-    
-    if ((tempColor = image.at<float>(p.row  , p.col+1)) > -1)
-    {
-        weightTemp = _weight({p.row, p.col+1}, p);
-        numerator += abs(image.at<float>(p.row, p.col+1)) * weightTemp;
-        denominator += weightTemp;
-    }
-    
-    if ((tempColor = image.at<float>(p.row+1, p.col)) > -1)
-    {
-        weightTemp = _weight({p.row+1, p.col}, p);
-        numerator += abs(image.at<float>(p.row+1, p.col)) * weightTemp;
-        denominator += weightTemp;
-    }
-    
-    if ((tempColor = image.at<float>(p.row, p.col-1)) > -1)
-    {
-        weightTemp = _weight({p.row, p.col-1}, p);
-        numerator += abs(image.at<float>(p.row, p.col-1)) * weightTemp;
-        denominator += weightTemp;
-    }
-    
-    if (_conn == CONN_8)
-    {
-        if ((tempColor = image.at<float>(p.row-1, p.col+1)) > -1)
-        {
-            weightTemp = _weight({p.row-1, p.col+1}, p);
-            numerator += abs(image.at<float>(p.row-1, p.col+1)) * weightTemp;
-            denominator += weightTemp;
-        }
-            
-        if ((tempColor = image.at<float>(p.row+1, p.col+1)) > -1)
-        {
-            weightTemp = _weight({p.row+1, p.col+1}, p);
-            numerator += abs(image.at<float>(p.row+1, p.col+1)) * weightTemp;
-            denominator += weightTemp;
-        }
-            
-        if ((tempColor = image.at<float>(p.row+1, p.col-1)) > -1)
-        {
-            weightTemp = _weight({p.row+1, p.col-1}, p);
-            numerator += abs(image.at<float>(p.row+1, p.col-1)) * weightTemp;
-            denominator += weightTemp;
-        }
-            
-        if ((tempColor = image.at<float>(p.row-1, p.col-1)) > -1)
-        {
-            weightTemp = _weight({p.row-1, p.col-1}, p);
-            numerator += abs(image.at<float>(p.row-1, p.col-1)) * weightTemp;
-            denominator += weightTemp;
-        }
-    }
-    return numerator / denominator;
+    return numerator/denominator;
 }
 
-// This function runs DFS on the pixels of the hole
-// where the 'edges' of every node (pixel) are decided in runtime.
-// The nodes that are considered to be connected to the given one are those
-// that are connected to an already computed pixel.
-// This way, in every step the algorithm adds another inside layer to the boundary.
-void BorderDFS(pixel p, cv::Mat& image)
+// Given a pixel that is connected to a boundary pixel, 
+// this function iterates over all the pixels that touch the boundary until there 
+// are no such pixels, while adding the pixels of the next level.
+// The level of a pixel defines the number of pixels from that pixel
+// to the original boundary.
+void BorderDFS_visit(
+            cv::Mat& image,
+            pixel p,
+            std::list<pixel>& rootNeighbors,
+            std::stack<pixel>& levelPixels,
+            int level)
 {
-    std::list<pixel> neighbors;
-    float marker;
-
-    // Find all the neighbors of the current node (pixel).
-    // Note that the maximum number of neighbors
-    // found are could never be greater than five.
-    findBorderNeighbors(p, image, neighbors);
-
-    // Calculate the color before continuing with the search,
-    // but mark this pixel as visited by putting a value between -1 and zero.
-    // The next nodes that will be connected (8 or 4 connectivity)
-    // to that pixel will add its precision from here, although
-    // the value is negative.
-    marker = neighborsColor(image, p);
-    image.at<float>(p.row, p.col) = -marker; // Marking this node (pixel) as gray.
-
-    for (pixel neighbor: neighbors)
+    static pixel tempNeighbors[8];
+    std::list<pixel> pixelNeighbors;
+    levelPixels.push(p);
+    image.at<float>(p.row, p.col) = 2 + findNeighborsColor(p, image, level);
+    fillPixelNeighbors(p, tempNeighbors);
+    STATE pixelState;
+    for (int i = 0; i < 8; i++)
     {
-        BorderDFS(neighbor, image);
+        pixelState = getState(image, tempNeighbors[i]);
+        if (pixelState == A && touchesBorder(image, tempNeighbors[i]))
+        {
+            image.at<float>(tempNeighbors[i].row, tempNeighbors[i].col) = 1.5;
+            pixelNeighbors.push_back(tempNeighbors[i]);
+        }
+        else if (pixelState == D)
+        {
+            addHoleHeighbors(image, rootNeighbors, tempNeighbors[i]);
+        }
     }
+    for (pixel n: pixelNeighbors)
+    {
+        BorderDFS_visit(image, n, rootNeighbors, levelPixels, level);
+    }
+    image.at<float>(p.row, p.col) += 2;//Marking it as treated - state D
+}
+
+// This function returns a list of all the pixels 
+// that are connected both to the given one AND to some border pixel.
+std::list<pixel> findBorderNeighbors(cv::Mat& image, pixel p)
+{
+    pixel neighbors[8];
+    fillPixelNeighbors(p, neighbors);
+    std::list<pixel> res;
+    STATE s;
+    for (int i = 0; i < _conn; i++)
+    {
+        s = getState(image, neighbors[i]);
+        if (s == A && touchesBorder(image, neighbors[i]))
+        {
+            res.push_back(neighbors[i]);
+            image.at<float>(neighbors[i].row, neighbors[i].col) = 1.5;
+        }
+    }
+    return res;
+}
+
+// This function make all the pixels in the given stack boundary pixels,
+// it colours all of those pixels with a values in the range [0,1].
+void putEState(std::stack<pixel>& s, cv::Mat& image)
+{
+    pixel p;
+    double dummy;
+    while (!s.empty())
+    {
+        p = s.top();
+        image.at<float>(p.row, p.col) = modf(image.at<float>(p.row, p.col), &dummy);
+        s.pop();
+    }
+}
+
+void fillPixelNeighbors(pixel p, pixel* neighbors)
+{
+    neighbors[0] = {p.row - 1, p.col};
+    neighbors[1] = {p.row, p.col + 1};
+    neighbors[2] = {p.row + 1, p.col};
+    neighbors[3] = {p.row, p.col - 1};
+    neighbors[4] = {p.row - 1, p.col + 1};
+    neighbors[5] = {p.row + 1, p.col + 1};
+    neighbors[6] = {p.row + 1, p.col - 1};
+    neighbors[7] = {p.row - 1, p.col - 1};
+}
     
-    image.at<float>(p.row, p.col) = marker; // Marking this node as black
+// This function abstractly builds an undirected connected graph at run-time
+// in such a way that if we run the DFS algorithm on that graph the pixels 
+// in the hole are being iterated inwards from the border.
+// This function build the graph and make the DFS algorithm at the same time.
+void BorderDFS(cv::Mat& image, pixel root)
+{
+    int level = 1;
+    double dummy;
+    // Marking it as a visited - gray, state C.
+    image.at<float>(root.row, root.col) = 2 + findNeighborsColor(root, image, 1);
+    std::list<pixel> rootNeighbors = findBorderNeighbors(image, root), temp;
+    std::stack<pixel> levelPixels;
+
+    // The first iteration iterates over the pixels
+    // that are connected to the given root. In each iteration we call the function
+    // 'BorderDFS_visit' which visits all the pixels in the given level of the hole.
+    // Each time we call 'BorderDFS_visit', it adds pixels, to the rootNeighbors list,
+    // that are from the next level so we can iterate over them in the next iteration 
+    // of this while loop.
+    while (!rootNeighbors.empty())
+    {
+        for (pixel rootNeighbor: rootNeighbors)
+        {
+            BorderDFS_visit(image, rootNeighbor, temp, levelPixels, level);
+        }
+        putEState(levelPixels, image);
+        level++;
+        rootNeighbors = temp;
+        temp.clear();
+    }
+    // Marking the pixel as a boundary pixel - state E.
+    image.at<float>(root.row, root.col) = modf(image.at<float>(root.row, root.col), &dummy);
 }
 
 // This function finds the two pixels that would make the
@@ -345,10 +346,8 @@ void fillImageHole(cv::Mat& image)
 // If in some case there is more than one hole, his function iterates over all them.
 void fillImageHolePrecision(cv::Mat& image)
 {
-    std::list<pixel> holePixels;
-    buildHole(image, &holePixels, nullptr);
     pixel first;
-    
+
     // Every time we run DFS on a graph, it searches over all
     // the nodes that are accessible from the node it started to search from
     // that are close to the boundary.
@@ -357,7 +356,7 @@ void fillImageHolePrecision(cv::Mat& image)
     // another sub-graph and search over it and so on.
     while ((first = findFirstPixelHole(image)).col != -1)
     {
-        BorderDFS(first, image);
+        BorderDFS(image, first);
     }
 }
 
@@ -412,7 +411,7 @@ void fillImageHoleDFT(cv::Mat& image)
     
     for (int row = 0; row < kernel.rows; row++)
         for (int col = 0; col < kernel.cols; col++)
-            kernel.at<float>(row, col) = _weight({row, col}, middleKernel);
+            kernel.at<float>(row, col) = _weight({row, col}, middleKernel, 1);
     
     cv::filter2D(colors, numerator, -1, kernel);
     cv::filter2D(bMask, denominator, -1, kernel);
