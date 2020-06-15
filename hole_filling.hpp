@@ -10,6 +10,8 @@ typedef struct pixel_t
     int col;
     pixel_t(){}
     pixel_t(int r,int c):row(r), col(c){}
+    bool operator==(const pixel_t& p) const;
+    size_t operator()(const pixel_t&) const;
 } pixel;
 
 typedef float (*weightFunction)(pixel, pixel, int);
